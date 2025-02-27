@@ -1,0 +1,405 @@
+setwd("~/Open Modeling Group Dropbox/UK Economic Risks")
+
+library(dplyr)
+source("lib/constants.R")
+
+do.doublecount <- T
+do.bigouts <- F
+
+incs <- read.csv("socioeconomics/adm3inc.csv")
+incs$GDP <- as.numeric(incs$GDPpc) * incs$pop
+
+## SLR damages
+load("channels/slr/slr-projections-adm3.RData") # byadm3.mcs
+
+growrate <- mean(diff(log(c(1314.245, 1329.186, 1350.140, 1382.128, 1418.235, 1455.828, 1495.583))))
+growfactor <- exp(growrate * (c(2020, 2050, 2090) - 2015))
+slr <- byadm3.mcs %>% left_join(data.frame(ADM3=rep(incs$county, 3),
+                                           period=rep(c("2011-2030", "2041-2060", "2081-2100"), each=nrow(incs)),
+                                           GDP=c(incs$GDP * growfactor[1], incs$GDP * growfactor[2],
+                                                 incs$GDP * growfactor[3])), by=c('ADM3', 'period'))
+slr$fracgdp <- slr$value * 1e9 * convert.usd2gbp.2015 / slr$GDP
+slr.merge <- slr[, c('period', 'scenario', 'mcid', 'ADM3', 'fracgdp')]
+names(slr.merge)[3] <- "run_id"
+names(slr.merge)[4] <- "county"
+
+## Agriculture
+load("channels/agriculture/agcombo-adm3.RData")
+agprod <- combo %>% left_join(incs, by='county')
+agprod$fracgdp <- agprod$damage.mgbp * 1e6 / agprod$GDP
+agprod.merge <- agprod[, c('period', 'scenario', 'run_id', 'county', 'fracgdp')]
+
+## Algal blooms
+load("channels/fisheries/algalbloom-projections-adm3.RData")
+algalblooms.adm32 <- algalblooms.adm3 %>% left_join(incs, by=c('NAME_3'='county'))
+algalblooms.adm32$fracgdp <- algalblooms.adm32$damage.adm * 1e6 / algalblooms.adm32$GDP
+algalblooms.merge <- algalblooms.adm32[, c('period', 'scenario', 'run_id', 'NAME_3', 'fracgdp')]
+names(algalblooms.merge)[4] <- 'county'
+
+## Milk production
+load("channels/agriculture/milk-final.RData") # byadm3.match
+milkprod <- byadm3.match %>% left_join(incs, by='county')
+milkprod$fracgdp <- milkprod$damage * 1e6 / milkprod$GDP
+milkprod.merge <- milkprod[, c('period', 'scenario', 'run_id', 'county', 'fracgdp')]
+
+## Lambs
+load("channels/agriculture/lambs-final.RData")
+lambs <- byadm3.match %>% left_join(incs, by='county')
+lambs$fracgdp <- lambs$damage * 1e6 / milkprod$GDP
+lambs.merge <- lambs[, c('period', 'scenario', 'run_id', 'county', 'fracgdp')]
+
+## Biosphere
+load("channels/biosphere/forest-projs-adm3.RData")
+forests <- byadm3 %>% left_join(incs, by='county')
+forests$fracgdp <- -forests$damage * 1000 * 0.7798 / forests$GDP
+forests.merge <- forests[, c('period', 'scenario', 'run_id', 'county', 'fracgdp')]
+forests.merge$run_id <- as.numeric(forests.merge$run_id)
+
+load("channels/biosphere/bioloss.RData")
+results$fracgdp <- results$percent / 100
+bioloss.merge <- results[, c('period', 'scenario', 'run_id', 'fracgdp')]
+
+## Energy demand
+load("channels/energy/rodeetal2-project-adm3.RData") # results2.adm3
+energy <- results2.adm3 %>% left_join(incs, by=c('NAME_3'='county'))
+energy$fracgdp <- 1e9 * (1 + 1.401 / 100) * 0.7798 * energy$damage.adm3 / energy$GDP
+energy.merge <- energy[, c('period', 'scenario', 'run_id', 'NAME_3', 'fracgdp')]
+names(energy.merge)[4] <- 'county'
+
+## Mortality
+load("channels/health/combo-adm3.RData")
+mortality <- combo %>% left_join(incs, by='county')
+mortality$deaths <- mortality$pop * mortality$deathrate / 1e5
+mortality$fracgdp <- mortality$deaths * vpf.2016 / mortality$GDP
+mortality.merge <- mortality[, c('period', 'scenario', 'run_id', 'county', 'fracgdp')]
+rm('mortality', 'combo')
+
+## Labor productivity
+load("channels/labor/final.RData") # byadm3
+labor <- byadm3 %>% left_join(incs, by='county')
+labor$fracgdp <- (labor$damage / 100) * gdp.2015.gbp / labor$GDP
+labor$run_id <- as.numeric(labor$run_id)
+labor.merge <- labor[, c('period', 'scenario', 'run_id', 'county', 'fracgdp')]
+
+## Trade effects
+load("topdown/combo-trade.RData")
+trade <- byrid
+trade$fracgdp <- trade$globe / 100
+
+## River flooding
+load("channels/flooding/combo-adm3.RData")
+flooding <- combo %>% left_join(incs, by='county')
+flooding$fracgdp <- (flooding$damage.mgbp * 1e6) / flooding$GDP
+flooding.merge <- flooding[, c('period', 'scenario', 'run_id', 'county', 'fracgdp')]
+
+## PESETA IV
+load("synthesis/pesetaiv-final-Droughts.RData")
+drought <- byadm3.matched %>% left_join(incs, by='county') # percent of total GDP
+drought$fracgdp <- (drought$damage / 100) * gdp.2015.gbp / drought$GDP
+if (do.doublecount) {
+    ## Double-count in droughts is 47% in 1981-2010 (1995) and 38% in 2100
+    for (year in c(2020, 2050, 2090)) {
+        doublecount <- 47 + (38 - 47) * (year - 1995) / (2100 - 1995)
+        period <- paste0(year - 9, '-', year + 10)
+        drought$fracgdp[drought$period == period] <- (1 - doublecount / 100) * drought$fracgdp[drought$period == period]
+    }
+}
+drought.merge <- drought[, c('period', 'scenario', 'run_id', 'county', 'fracgdp')]
+
+load("synthesis/pesetaiv-final-Electricity Production.RData")
+elecprod <- byadm3.matched %>% left_join(incs, by='county') # percent of total GDP
+elecprod$fracgdp <- (elecprod$damage / 100) * gdp.2015.gbp / elecprod$GDP
+elecprod.merge <- elecprod[, c('period', 'scenario', 'run_id', 'county', 'fracgdp')]
+
+## Combine all
+
+alldamage <- drought.merge %>% left_join(slr.merge, by=c('scenario', 'period', 'run_id', 'county'), suffix=c('', '.slr')) %>%
+    left_join(mortality.merge, by=c('scenario', 'period', 'run_id', 'county'), suffix=c('', '.mort')) %>%
+    left_join(labor.merge, by=c('scenario', 'period', 'run_id', 'county'), suffix=c('', '.labor')) %>%
+    left_join(milkprod.merge, by=c('scenario', 'period', 'run_id', 'county'), suffix=c('', '.milk')) %>%
+    left_join(lambs.merge, by=c('scenario', 'period', 'run_id', 'county'), suffix=c('', '.lamb')) %>%
+    left_join(forests.merge, by=c('scenario', 'period', 'run_id', 'county'), suffix=c('', '.bios')) %>%
+    left_join(bioloss.merge, by=c('scenario', 'period', 'run_id'), suffix=c('', '.bios2')) %>%
+    left_join(energy.merge, by=c('scenario', 'period', 'run_id', 'county'), suffix=c('', '.ener')) %>%
+    left_join(agprod.merge, by=c('scenario', 'period', 'run_id', 'county'), suffix=c('', '.crop')) %>%
+    left_join(trade, by=c('scenario', 'period', 'run_id'), suffix=c('', '.trad')) %>%
+    left_join(algalblooms.merge, by=c('scenario', 'period', 'run_id', 'county'), suffix=c('', '.algal')) %>%
+    left_join(flooding.merge, by=c('scenario', 'period', 'run_id', 'county'), suffix=c('', '.rivr')) %>%
+    left_join(elecprod.merge, by=c('scenario', 'period', 'run_id', 'county'), suffix=c('.dght', '.elec'))
+alldamage$fracgdp.slr[is.na(alldamage$fracgdp.slr)] <- 0
+alldamage$fracgdp.crop[is.na(alldamage$fracgdp.crop)] <- 0
+alldamage$fracgdp.milk[is.na(alldamage$fracgdp.milk)] <- 0
+alldamage$fracgdp.lamb[is.na(alldamage$fracgdp.lamb)] <- 0
+alldamage$fracgdp.ener[is.na(alldamage$fracgdp.ener)] <- mean(alldamage$fracgdp.ener, na.rm=T) # Don't bother further, since small
+alldamage$fracgdp.algal[is.na(alldamage$fracgdp.algal)] <- 0
+
+## Apply CGE effects
+cge.effects <- data.frame(col=c('fracgdp.slr', 'fracgdp.ener'), # 'fracgdp.crop', 'fracgdp.labor',
+                          ratio=c(1.22205362, 0.95089301)) # 2.13668464, 2.05989019,
+for (ii in 1:nrow(cge.effects)) {
+    col <- cge.effects$col[ii]
+    alldamage[, paste0(col, '.cge')] <- alldamage[, col] * cge.effects$ratio[ii]
+}
+
+## Add missing non-catastrophic damages
+alldamage$total.known <- alldamage$fracgdp.slr.cge + alldamage$fracgdp.algal + alldamage$fracgdp.mort +
+    alldamage$fracgdp.labor + alldamage$fracgdp.crop + alldamage$fracgdp.dght + alldamage$fracgdp.elec +
+    alldamage$fracgdp.rivr + alldamage$fracgdp.milk + alldamage$fracgdp.lamb + alldamage$fracgdp.ener.cge +
+    alldamage$fracgdp.trad + alldamage$fracgdp.bios + alldamage$fracgdp.bios2
+
+alldamage$missing <- alldamage$total.known * .25
+
+load("topdown/catastrophic.RData")
+cata.merge <- results
+names(cata.merge)[4] <- 'fracgdp.cata'
+
+alldamage2 <- alldamage %>% left_join(cata.merge, by=c('scenario', 'period', 'run_id'), suffix=c('', '.cata'))
+alldamage2$total <- alldamage2$total.known + alldamage2$missing + alldamage2$fracgdp.cata
+
+alldamage2$fracgdp.live <- alldamage2$fracgdp.algal + alldamage2$fracgdp.milk + alldamage2$fracgdp.lamb
+alldamage2$fracgdp.esad <- alldamage2$fracgdp.elec + alldamage2$fracgdp.ener.cge
+alldamage2$fracgdp.hydr <- alldamage2$fracgdp.dght + alldamage2$fracgdp.rivr
+alldamage2$fracgdp.ecos <- alldamage2$fracgdp.bios + alldamage2$fracgdp.bios2
+
+if (!do.doublecount) {
+    alldamage.adm3 <- alldamage2
+    save(alldamage.adm3, file="synthesis/alldamage-adm3.RData")
+} else {
+    alldamage.adm3.dblcnt <- alldamage2
+    save(alldamage.adm3.dblcnt, file="synthesis/alldamage-adm3-dblcnt.RData")
+}
+
+mean(alldamage2$total, na.rm=T)
+
+source("lib/report.R")
+
+shp.adm3 <- importShapefile("regions/gadm36_GBR_shp/gadm36_GBR_3.shp")
+shp.adm3.polydata <- attr(shp.adm3, 'PolyData')
+
+alldamage3 <- alldamage2 %>% left_join(shp.adm3.polydata[, c('PID', 'NAME_3')], by=c('county'='NAME_3'))
+
+if (do.bigouts) {
+    make.maps.loop("synthesis/maps", "total", alldamage3, shp.adm3, function(subres) {
+        subres %>% group_by(PID) %>% summarize(mu=mean(total, na.rm=T), ci5=quantile(total, .05, na.rm=T), ci95=quantile(total, .95, na.rm=T))
+    }, "Expected\nGDP\ndamage (%)", "1-in-20\nGDP\ndamage (%)", -0.05, 0.2, labels=percent)
+
+    if (!do.doublecount) {
+        collabs <- list('fracgdp.slr.cge'='Coastal impacts', 'fracgdp.mort'='Health', 'fracgdp.labor'='Labour productivity',
+                        'fracgdp.crop'='Agriculture', 'fracgdp.hydr'='Droughts and flooding', 'fracgdp.esad'='Energy supply & demand',
+                        'fracgdp.live'='Livestock & fisheries', 'fracgdp.ecos'='Ecosystems', 'fracgdp.trad'='Trade effects',
+                        'missing'='Missing non-catastrophic', 'fracgdp.cata'='Catastrophic risk')
+    } else {
+        collabs <- list('total'='Total costs')
+    }
+
+    for (col in names(collabs)) {
+        alldamage3$mapval <- alldamage3[, col, drop=T]
+        tosave <- alldamage3 %>% group_by(PID, county) %>%
+            summarize(mu_ssp126_2020=mean(mapval[scenario == 'ssp126' & period == '2011-2030'], na.rm=T),
+                      ci5_ssp126_2020=quantile(mapval[scenario == 'ssp126' & period == '2011-2030'], .05, na.rm=T),
+                      ci95_ssp126_2020=quantile(mapval[scenario == 'ssp126' & period == '2011-2030'], .95, na.rm=T),
+                      mu_ssp126_2050=mean(mapval[scenario == 'ssp126' & period == '2041-2060'], na.rm=T),
+                      ci5_ssp126_2050=quantile(mapval[scenario == 'ssp126' & period == '2041-2060'], .05, na.rm=T),
+                      ci95_ssp126_2050=quantile(mapval[scenario == 'ssp126' & period == '2041-2060'], .95, na.rm=T),
+                      mu_ssp126_2090=mean(mapval[scenario == 'ssp126' & period == '2081-2100'], na.rm=T),
+                      ci5_ssp126_2090=quantile(mapval[scenario == 'ssp126' & period == '2081-2100'], .05, na.rm=T),
+                      ci95_ssp126_2090=quantile(mapval[scenario == 'ssp126' & period == '2081-2100'], .95, na.rm=T),
+                      mu_ssp370_2020=mean(mapval[scenario == 'ssp370' & period == '2011-2030'], na.rm=T),
+                      ci5_ssp370_2020=quantile(mapval[scenario == 'ssp370' & period == '2011-2030'], .05, na.rm=T),
+                      ci95_ssp370_2020=quantile(mapval[scenario == 'ssp370' & period == '2011-2030'], .95, na.rm=T),
+                      mu_ssp370_2050=mean(mapval[scenario == 'ssp370' & period == '2041-2060'], na.rm=T),
+                      ci5_ssp370_2050=quantile(mapval[scenario == 'ssp370' & period == '2041-2060'], .05, na.rm=T),
+                      ci95_ssp370_2050=quantile(mapval[scenario == 'ssp370' & period == '2041-2060'], .95, na.rm=T),
+                      mu_ssp370_2090=mean(mapval[scenario == 'ssp370' & period == '2081-2100'], na.rm=T),
+                      ci5_ssp370_2090=quantile(mapval[scenario == 'ssp370' & period == '2081-2100'], .05, na.rm=T),
+                      ci95_ssp370_2090=quantile(mapval[scenario == 'ssp370' & period == '2081-2100'], .95, na.rm=T))
+        write.csv(tosave, paste0("online/output-v2/", collabs[[col]], "-v2.csv"), row.names=F)
+
+        ## for (per in unique(alldamage3$period)) {
+        ##     for (scn in unique(alldamage3$scenario)) {
+        ##         tosave <- subset(alldamage3, period == per & scenario == scn) %>% group_by(PID, county) %>%
+        ##             summarize(mu=mean(mapval, na.rm=T), ci5=quantile(mapval, .05, na.rm=T), ci95=quantile(mapval, .95, na.rm=T))
+        ##         write.csv(tosave, paste0("synthesis/output/", collabs[[col]], "-", scn, "-", per, ".csv"), row.names=F)
+        ##     }
+        ## }
+    }
+
+    ## Make maps for all sectors
+    lobounds <- list('fracgdp.slr.cge'=0, 'fracgdp.algal'=0, 'fracgdp.mort'=0,
+                     'fracgdp.labor'=0, 'fracgdp.crop'=-.025, 'fracgdp.dght'=0, 'fracgdp.elec'=-.0000005,
+                     'fracgdp.rivr'=0, 'fracgdp.milk'=-.0002, 'fracgdp.lamb'=0, 'fracgdp.ener.cge'=-.0005,
+                     'fracgdp.bios'=-.005, 'fracgdp.ecos'=-.004, 'fracgdp.live'=0,
+                     'fracgdp.esad'=-.0002, 'fracgdp.hydr'=0)
+    #'fracgdp.esad'=-.0005, 'fracgdp.hydr'=0)
+    hibounds <- list('fracgdp.slr.cge'=.1, 'fracgdp.algal'=.001, 'fracgdp.mort'=.01,
+                     'fracgdp.labor'=.001, 'fracgdp.crop'=.05, 'fracgdp.dght'=.00004, 'fracgdp.elec'=.000001,
+                     'fracgdp.rivr'=.00001, 'fracgdp.milk'=.0004, 'fracgdp.lamb'=.0005, 'fracgdp.ener.cge'=0,
+                     'fracgdp.bios'=0, 'fracgdp.ecos'=.002, 'fracgdp.live'=0.002,
+                     'fracgdp.esad'=.0002, 'fracgdp.hydr'=.01)
+    #'fracgdp.esad'=.000001, 'fracgdp.hydr'=.00005)
+
+    for (col in c('fracgdp.esad')) {#, 'fracgdp.hydr')) {#c('fracgdp.live', 'fracgdp.ecos')) { #c('fracgdp.slr.cge', 'fracgdp.algal', 'fracgdp.mort',
+                                        #  'fracgdp.labor', 'fracgdp.crop', 'fracgdp.dght', 'fracgdp.elec',
+                                        #  'fracgdp.rivr', 'fracgdp.milk', 'fracgdp.lamb', 'fracgdp.ener.cge',
+                                        #  'fracgdp.trad', 'fracgdp.bios', 'fracgdp.bios2')) {
+        alldamage3$mapval <- alldamage3[, col, drop=T]
+        make.maps.loop("synthesis/channel-maps", col, alldamage3, shp.adm3, function(subres) {
+            subres %>% group_by(PID) %>% summarize(mu=mean(mapval, na.rm=T), ci5=quantile(mapval, .05, na.rm=T), ci95=quantile(mapval, .95, na.rm=T))
+        }, "Expected\nGDP\ndamage (%)", "1-in-20\nGDP\ndamage (%)", lobounds[[col]], hibounds[[col]], labels=percent)
+    }
+}
+
+## Combine into larger regions
+
+shp.nuts1 <- importShapefile("regions/ref-nuts-2016-10m.shp/NUTS_RG_10M_2016_4326_LEVL_1.shp/NUTS_RG_10M_2016_4326_LEVL_1.shp")
+shp.nuts1.polydata <- attr(shp.nuts1, 'PolyData')
+
+centroids <- calcCentroid(shp.adm3, rollup=1)
+centroids$EID <- 1:nrow(centroids)
+
+found <- findPolys(as.EventData(centroids), shp.nuts1)
+alldamage3$NUTS_NAME <- NA
+for (ii in 1:nrow(found))
+    alldamage3$NUTS_NAME[found$EID[ii] == alldamage3$PID] <- as.character(shp.nuts1.polydata$NUTS_NAME[found$PID[ii]])
+
+alldamage4 <- alldamage3 %>% left_join(shp.adm3.polydata, by=c('county'='NAME_3'))
+## alldamage4$bigreg <- as.character(alldamage4$NAME_1)
+## alldamage4$bigreg[alldamage4$bigreg == 'England'] <- alldamage4$NUTS_NAME[alldamage4$bigreg == 'England']
+## alldamage4$bigreg[alldamage4$bigreg %in% c("LONDON", "EAST OF ENGLAND", "SOUTH EAST (ENGLAND)", "SOUTH WEST (ENGLAND)")] <- "Southern England"
+## alldamage4$bigreg[alldamage4$bigreg %in% c("EAST MIDLANDS (ENGLAND)", "WEST MIDLANDS (ENGLAND)")] <- "Midlands England"
+## alldamage4$bigreg[alldamage4$bigreg %in% c("YORKSHIRE AND THE HUMBER", "NORTH WEST (ENGLAND)", "NORTH EAST (ENGLAND)")] <- "Northern England"
+
+library(stringr)
+alldamage4$nutsreg <- as.character(alldamage4$NAME_1)
+alldamage4$nutsreg[alldamage4$nutsreg == 'England'] <- str_to_title(alldamage4$NUTS_NAME[alldamage4$nutsreg == 'England'])
+alldamage4$nutsreg[alldamage4$county == "Portsmouth"] <- "South East (England)"
+
+unique(alldamage4$nutsreg)
+
+alldamage5 <- alldamage4 %>% left_join(incs, by='county') %>% group_by(scenario, run_id, period, nutsreg) %>%
+    summarize(fracgdp.dght=sum(fracgdp.dght * GDP) / sum(GDP), fracgdp.slr.cge=sum(fracgdp.slr.cge * GDP) / sum(GDP),
+              fracgdp.mort=sum(fracgdp.mort * GDP) / sum(GDP), fracgdp.labor=sum(fracgdp.labor * GDP) / sum(GDP),
+              fracgdp.milk=sum(fracgdp.milk * GDP) / sum(GDP), fracgdp.lamb=sum(fracgdp.lamb * GDP) / sum(GDP),
+              fracgdp.bios=sum(fracgdp.bios * GDP) / sum(GDP), fracgdp.ener.cge=sum(fracgdp.ener.cge * GDP) / sum(GDP),
+              fracgdp.crop=sum(fracgdp.crop * GDP) / sum(GDP), fracgdp.trad=sum(fracgdp.trad * GDP) / sum(GDP),
+              fracgdp.algal=sum(fracgdp.algal * GDP) / sum(GDP), fracgdp.rivr=sum(fracgdp.rivr * GDP) / sum(GDP),
+              fracgdp.elec=sum(fracgdp.elec * GDP) / sum(GDP), missing=sum(missing * GDP) / sum(GDP),
+              fracgdp.cata=sum(fracgdp.cata * GDP) / sum(GDP), fracgdp.bios2=sum(fracgdp.bios2 * GDP) / sum(GDP))
+
+alldamage5$fracgdp.live <- alldamage5$fracgdp.algal + alldamage5$fracgdp.milk + alldamage5$fracgdp.lamb
+alldamage5$fracgdp.esad <- alldamage5$fracgdp.elec + alldamage5$fracgdp.ener.cge
+alldamage5$fracgdp.hydr <- alldamage5$fracgdp.dght + alldamage5$fracgdp.rivr
+alldamage5$fracgdp.ecos <- alldamage5$fracgdp.bios + alldamage5$fracgdp.bios2
+alldamage5$total <- alldamage5$fracgdp.dght + alldamage5$fracgdp.slr.cge + alldamage5$fracgdp.mort + alldamage5$fracgdp.labor +
+    alldamage5$fracgdp.milk + alldamage5$fracgdp.lamb + alldamage5$fracgdp.bios + alldamage5$fracgdp.ener.cge +
+    alldamage5$fracgdp.crop + alldamage5$fracgdp.trad + alldamage5$fracgdp.algal + alldamage5$fracgdp.rivr + alldamage5$fracgdp.elec +
+    alldamage5$missing + alldamage5$fracgdp.cata + alldamage5$fracgdp.bios2
+
+if (!do.doublecount) {
+    alldamage.reg <- alldamage5
+    save(alldamage.reg, file="synthesis/alldamage-reg.RData")
+} else {
+    alldamage.reg.dblcnt <- alldamage5
+    save(alldamage.reg.dblcnt, file="synthesis/alldamage-reg-dblcnt.RData")
+}
+
+alldamage5$scenario.label <- "High mitigation (SSP1-2.6)"
+alldamage5$scenario.label[alldamage5$scenario == 'ssp370'] <- "Current policies (SSP3-7.0)"
+
+alldamage5$nutsreg <- factor(alldamage5$nutsreg, levels=rev(c("Northern Ireland", "Scotland", "Wales", "North West (England)",
+                                                              "North East (England)", "Yorkshire And The Humber",
+                                                              "West Midlands (England)", "East Midlands (England)",
+                                                              "South West (England)", "South East (England)",
+                                                              "East Of England", "London")))
+
+pdf1 <- subset(alldamage5, period == '2081-2100') %>% group_by(nutsreg, scenario.label, period) %>%
+    summarize(channel=c('Coastal impacts', 'Health', 'Labour productivity', 'Agriculture',
+                        'Droughts', 'Energy supply & demand', 'River floods', 'Livestock & fisheries',
+                        'Ecosystems', 'Trade effects', 'Missing non-catastrophic', 'Catastrophic risk'),
+              mu=c(mean(fracgdp.slr.cge), mean(fracgdp.mort, na.rm=T),
+                   mean(fracgdp.labor, na.rm=T), mean(fracgdp.crop, na.rm=T),
+                   mean(fracgdp.dght, na.rm=T), mean(fracgdp.elec, na.rm=T) + mean(fracgdp.ener.cge, na.rm=T),
+                   mean(fracgdp.rivr, na.rm=T),
+                   mean(fracgdp.milk, na.rm=T) + mean(fracgdp.lamb, na.rm=T) + mean(fracgdp.algal), mean(fracgdp.bios + fracgdp.bios2),
+                   mean(fracgdp.trad, na.rm=T), mean(missing, na.rm=T), mean(fracgdp.cata, na.rm=T)))
+pdf2 <- subset(alldamage5, period == '2081-2100') %>% group_by(nutsreg, scenario.label, period) %>%
+    summarize(ci5=quantile(fracgdp.slr.cge + fracgdp.algal + fracgdp.mort +
+                           fracgdp.labor + fracgdp.crop + fracgdp.dght + fracgdp.elec + fracgdp.ener.cge + fracgdp.rivr +
+                           fracgdp.milk + fracgdp.lamb + fracgdp.bios + fracgdp.bios2 + fracgdp.trad + missing + fracgdp.cata, .05, na.rm=T),
+              ci95=quantile(fracgdp.slr.cge + fracgdp.algal + fracgdp.mort +
+                            fracgdp.labor + fracgdp.crop + fracgdp.dght + fracgdp.elec + fracgdp.ener.cge + fracgdp.rivr +
+                            fracgdp.milk + fracgdp.lamb + fracgdp.bios + fracgdp.bios2 + fracgdp.trad + missing + fracgdp.cata, .95, na.rm=T))
+
+channel.order <- c('Droughts', 'River floods', 'Agriculture', 'Livestock & fisheries',
+                   'Ecosystems', 'Energy supply & demand', 'Labour productivity', 'Health',
+                   'Coastal impacts', 'Trade effects', 'Missing non-catastrophic', 'Catastrophic risk')
+pdf1$channel <- factor(pdf1$channel, levels=rev(channel.order))
+
+ggplot(pdf1, aes(x=nutsreg)) +
+    coord_flip() +
+    facet_wrap(~ scenario.label) +
+    geom_hline(yintercept=0) +
+    geom_col(aes(y=mu, fill=channel), alpha=.8, position='stack') +
+    geom_errorbar(data=pdf2, aes(ymin=ci5, ymax=ci95), width=.25) +
+    scale_y_continuous("Annual welfare-equivalent damages, 2081-2100 (% GDP)", labels=scales::percent) + xlab(NULL) +
+    theme_bw() + scale_fill_manual("Channel:", breaks=rev(channel.order),
+                                   values=rev(c('#b15928', '#a6cee3', '#33a02c', '#ffff99',
+                                                '#b2df8a', '#e31a1c', '#fdbf6f', '#fb9a99',
+                                                '#1f78b4', '#ff7f00', '#808080', '#cab2d6')))
+ggsave("synthesis/barbyregion.pdf", width=8, height=3.5)
+
+## Map with color by biggest sector
+
+alldamage3$sectormax <- pmax(alldamage3$fracgdp.slr.cge, alldamage3$fracgdp.mort,
+                             alldamage3$fracgdp.labor, alldamage3$fracgdp.crop, alldamage3$fracgdp.dght,
+                             alldamage3$fracgdp.elec + alldamage3$fracgdp.ener.cge, alldamage3$fracgdp.rivr,
+                             alldamage3$fracgdp.milk + alldamage3$fracgdp.lamb + alldamage3$fracgdp.algal,
+                             alldamage3$fracgdp.bios)
+alldamage3$bigsector <- ifelse(alldamage3$fracgdp.slr.cge == alldamage3$sectormax, 'Coastal impacts',
+                        ifelse(alldamage3$fracgdp.milk + alldamage3$fracgdp.lamb + alldamage3$fracgdp.algal == alldamage3$sectormax, 'Livestock & fisheries',
+                        ifelse(alldamage3$fracgdp.mort == alldamage3$sectormax, 'Health',
+                        ifelse(alldamage3$fracgdp.labor == alldamage3$sectormax, 'Labour productivity',
+                        ifelse(alldamage3$fracgdp.crop == alldamage3$sectormax, 'Agriculture',
+                        ifelse(alldamage3$fracgdp.dght == alldamage3$sectormax, 'Droughts',
+                        ifelse(alldamage3$fracgdp.elec + alldamage3$fracgdp.ener.cge == alldamage3$sectormax, 'Energy supply & demand',
+                        ifelse(alldamage3$fracgdp.rivr == alldamage3$sectormax, 'River floods',
+                        ifelse(alldamage3$fracgdp.bios == alldamage3$sectormax, 'Ecosystems', 'unknown')))))))))
+
+library(pracma)
+alldamage3$bigsector <- factor(alldamage3$bigsector, channel.order)
+alldamage3$secnum <- as.numeric(alldamage3$bigsector)
+
+pdf <- alldamage3 %>% group_by(scenario, period, PID) %>% summarize(secnum=Mode(secnum))
+pdf$bigsector <- channel.order[pdf$secnum]
+
+allshp <- data.frame()
+for (period in c('2011-2030', '2041-2060', '2081-2100')) {
+    shp.adm32 <- shp.adm3 %>% left_join(pdf[pdf$scenario == 'ssp370' & pdf$period == period, c('PID', 'bigsector')])
+    allshp <- rbind(allshp, cbind(period=period, shp.adm32))
+
+    gp <- ggplot(shp.adm32, aes(X, Y, group=paste(PID, SID))) +
+        coord_map(xlim=c(-8, 2), ylim=c(50, 60.5)) + geom_polygon(aes(fill=bigsector)) +
+        geom_polygon(data=shp.national.level, size=.1, fill="#00000000", colour="#808080") +
+        theme_bw() + theme(axis.text.x=element_blank(), axis.ticks.x=element_blank(),
+                           axis.text.y=element_blank(), axis.ticks.y=element_blank()) +
+        xlab(NULL) + ylab(NULL) +
+        scale_fill_manual("High risk channel:", breaks=rev(channel.order),
+                          values=rev(c('#b15928', '#a6cee3', '#33a02c', '#ffff99',
+                                       '#b2df8a', '#e31a1c', '#fdbf6f', '#fb9a99',
+                                       '#1f78b4', '#ff7f00', '#808080', '#cab2d6')))
+    ggsave(paste0("synthesis/maps/worst-", period, ".pdf"), gp, width=4.5, height=7)
+}
+
+gp <- ggplot(allshp, aes(X, Y, group=paste(PID, SID))) +
+    facet_wrap(~ period, ncol=3) +
+    coord_map(xlim=c(-8, 2), ylim=c(50, 60.5)) + geom_polygon(aes(fill=bigsector)) +
+    geom_polygon(data=shp.national.level, size=.1, fill="#00000000", colour="#808080") +
+    theme_bw() + theme(axis.text.x=element_blank(), axis.ticks.x=element_blank(),
+                       axis.text.y=element_blank(), axis.ticks.y=element_blank()) +
+    xlab(NULL) + ylab(NULL) +
+    scale_fill_manual("High risk channel:", breaks=rev(channel.order),
+                      values=rev(c('#c66532', '#d8dfdf', '#c0d242', '#33baa9',
+                                   '#b2df8a', '#e31a1c', '#ffd31a', '#a7b4bb',
+                                   '#35b0e6', '#ff7f00', '#808080', '#cab2d6')))
+ggsave(paste0("synthesis/maps/worst-all.pdf"), gp, width=.8*(4*3 + 1), height=.8*7)
+

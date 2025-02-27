@@ -1,0 +1,20 @@
+41598_2021_99156_MOESM2_ESM.xlsx:
+https://www.nature.com/articles/s41598-021-99156-5
+
+
+hajat-et-al-2014.csv:
+
+Table 39 The total economic costs of heat-related mortality from
+climate change and socio-economic change in the
+UK. £Million/year. 2020 prices, from estimates of Hajat et al.,
+2014. Note does not include current adaptation. Medium values.
+
+Table 40 The total economic costs of heat-related mortality from
+climate change and socio-economic change in the
+UK. £Million/year. 2020 prices, no GDP uplift, from estimates of Hajat
+et al., 2014 for low, central and high climate change. Note does not
+include current adaptation.
+
+hajat-et-al-2014-range.csv: Table 41 The mean, minimum and maximum
+estimates of heat-related deaths in regions/year/100000 population of
+all ages. Source Hajat et al., 2014.
