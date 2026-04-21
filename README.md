@@ -1,4 +1,4 @@
-# Reproduction code for "Towards comprehensive assessments of national climate damages: an application to the United Kingdom"
+# Reproduction code for "Comprehensive national climate damage assessments framework applied to the UK"
 
 ## Overview
 
